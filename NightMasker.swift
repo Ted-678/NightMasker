@@ -201,6 +201,7 @@ final class MaskerEngine: ObservableObject {
     private var controlTimer: Timer?
     private var startDate: Date?
     private var fade: Double = 1.0
+    private var startupFade: Double = 0.0   // 运行开始时掩蔽声整体淡入(0->1)
 
     // UI 状态
     @Published var running = false
@@ -214,7 +215,7 @@ final class MaskerEngine: ObservableObject {
 
     // 可调参数
     @Published var offsetDB: Double = 4        // 掩蔽余量:掩蔽声比环境声高多少 dB
-    @Published var maxVol: Double = 0.6        // 每频段音量上限
+    @Published var maxVol: Double = 0.4        // 每频段音量上限(保守默认,从低往高加更安全)
     @Published var baseVol: Double = 0.04      // 基础底噪音量(防止完全静音后突然出声)
     @Published var quietGateDB: Double = -58   // 低于此环境声级视为"安静",回落到底噪
     @Published var timerHours: Double = 8      // 定时(小时),到时后 10 分钟淡出
@@ -284,6 +285,7 @@ final class MaskerEngine: ObservableObject {
         running = true
         startDate = Date()
         fade = 1.0
+        startupFade = 0.0
         vol = [Double](repeating: 0, count: 8)
         lastSetVol = vol
 
@@ -358,8 +360,13 @@ final class MaskerEngine: ObservableObject {
 
         let calibVol: Double = 0.4
         for b in 0..<8 {
-            players[b].volume = Float(calibVol)
-            try? await Task.sleep(nanoseconds: 500_000_000)          // 稳定期
+            // 0.3 秒淡入到校准音量,避免夜里被逐个频段的突然播放吓到
+            let steps = 6
+            for k in 1...steps {
+                players[b].volume = Float(calibVol * Double(k) / Double(steps))
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)          // 稳定期
             let p = await measure(seconds: 0.7) ?? floorPower
             players[b].volume = 0
             let net = max(p[b] - floorPower[b], 1e-12)
@@ -386,6 +393,7 @@ final class MaskerEngine: ObservableObject {
     private func tick() {
         guard running, let powers = bank?.takeAverages() else { return }
 
+        if startupFade < 1.0 { startupFade = min(startupFade + 0.15, 1.0) }  // 约 3 秒整体淡入
         updateFadeAndTimer()
 
         var newAmbient = ambientDB
@@ -418,7 +426,7 @@ final class MaskerEngine: ObservableObject {
                 vol[b] = staticVol[b] * staticMaster
             }
 
-            let effective = vol[b] * fade
+            let effective = vol[b] * fade * startupFade
             players[b].volume = Float(effective)
             lastSetVol[b] = effective
 
