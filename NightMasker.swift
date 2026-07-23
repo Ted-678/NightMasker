@@ -194,6 +194,7 @@ final class MaskerEngine: ObservableObject {
     // 校准结果:selfGain[b] = 麦克风频段功率 / 播放音量²
     private var selfGain = [Double](repeating: 0, count: 8)
     private var floorPower = [Double](repeating: 1e-10, count: 8)
+    private var floorDB = [Double](repeating: -100, count: 8)   // 每频段本底噪音,门限由它推算
 
     // 控制环状态
     private var vol = [Double](repeating: 0, count: 8)        // 当前指令音量(平滑后)
@@ -217,8 +218,13 @@ final class MaskerEngine: ObservableObject {
     @Published var offsetDB: Double = 4        // 掩蔽余量:掩蔽声比环境声高多少 dB
     @Published var maxVol: Double = 0.4        // 每频段音量上限(保守默认,从低往高加更安全)
     @Published var baseVol: Double = 0.04      // 基础底噪音量(防止完全静音后突然出声)
-    @Published var quietGateDB: Double = -58   // 低于此环境声级视为"安静",回落到底噪
+    @Published var gateOffsetDB: Double = 14   // 灵敏度:噪音高出本频段底噪多少 dB 才介入
     @Published var timerHours: Double = 8      // 定时(小时),到时后 10 分钟淡出
+    @Published var dawnEnabled: Bool = true    // 清晨预铺垫:早班交通前主动抬高底噪
+    @Published var dawnStartHour: Double = 4.5 // 从几点开始抬升
+    @Published var dawnEndHour: Double = 9.0   // 到几点结束
+    @Published var dawnBoost: Double = 0.10    // 抬升量(加在基础底噪之上)
+    @Published var dawnActive = false          // 当前是否处于预铺垫时段
     @Published var staticVol = [Double](repeating: 0.35, count: 8)
     @Published var staticMaster: Double = 0.8
 
@@ -357,6 +363,7 @@ final class MaskerEngine: ObservableObject {
         try? await Task.sleep(nanoseconds: 1_000_000_000)
 
         floorPower = await measure(seconds: 1.2) ?? floorPower
+        floorDB = floorPower.map { 10 * log10(max($0, 1e-12)) }
 
         let calibVol: Double = 0.4
         for b in 0..<8 {
@@ -398,6 +405,7 @@ final class MaskerEngine: ObservableObject {
 
         var newAmbient = ambientDB
         var newMasker = maskerDB
+        let floorNow = currentFloorVol()
 
         for b in 0..<8 {
             // 从测量值里减去自己播放的贡献
@@ -408,14 +416,15 @@ final class MaskerEngine: ObservableObject {
 
             if mode == .adaptive {
                 var desired: Double
+                let gate = floorDB[b] + gateOffsetDB     // 门限相对本频段底噪,自动适配房间与设备
                 if !calibrated || selfGain[b] < 1e-12 {
-                    desired = baseVol
-                } else if aDB < quietGateDB {
-                    desired = baseVol
+                    desired = floorNow
+                } else if aDB < gate {
+                    desired = floorNow
                 } else {
                     let targetP = ambientP * pow(10, offsetDB / 10)
                     desired = sqrt(targetP / selfGain[b])
-                    desired = max(desired, baseVol)
+                    desired = max(desired, floorNow)
                 }
                 desired = min(desired, maxVol)
 
@@ -438,6 +447,25 @@ final class MaskerEngine: ObservableObject {
         maskerDB = newMasker
 
         if logEnabled { appendLog() }
+    }
+
+    /// 清晨预铺垫:在设定时段内逐步抬高底噪,提前垫住早班电车/交通的低频
+    /// 控制环再快也要约 1.5 秒才追上,而清晨噪音是突然出现的,提前铺垫比被动追赶有效
+    private func currentFloorVol() -> Double {
+        guard dawnEnabled else {
+            if dawnActive { dawnActive = false }
+            return baseVol
+        }
+        let cal = Calendar.current
+        let now = Date()
+        let h = Double(cal.component(.hour, from: now)) + Double(cal.component(.minute, from: now)) / 60.0
+        guard h >= dawnStartHour && h < dawnEndHour else {
+            if dawnActive { dawnActive = false }
+            return baseVol
+        }
+        if !dawnActive { dawnActive = true }
+        let ramp = min((h - dawnStartHour) / 0.5, 1.0)   // 30 分钟内平滑升到位
+        return baseVol + dawnBoost * ramp
     }
 
     private func updateFadeAndTimer() {
@@ -565,6 +593,11 @@ struct ContentView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.orange)
                         }
+                        if eng.dawnActive {
+                            Text("清晨预铺垫生效中")
+                                .font(.footnote)
+                                .foregroundStyle(.teal)
+                        }
                     }
 
                     SpectrumView(ambient: eng.ambientDB, masker: eng.maskerDB)
@@ -618,8 +651,8 @@ struct ContentView: View {
                       hint: "每个频段的硬上限,防止半夜大噪音时被轰醒")
             sliderRow("基础底噪", value: $eng.baseVol, range: 0...0.2, format: "%.2f",
                       hint: "安静时保留的一层薄底噪,避免忽有忽无")
-            sliderRow("安静门限", value: $eng.quietGateDB, range: -75 ... -35, format: "%.0f dB",
-                      hint: "环境低于此值就视为安静,回落到底噪")
+            sliderRow("灵敏度", value: $eng.gateOffsetDB, range: 4...30, format: "高于底噪 %.0f dB",
+                      hint: "噪音超出本频段底噪这么多才介入。数值越小越敏感")
 
             HStack {
                 Image(systemName: eng.calibrated ? "checkmark.circle.fill" : "exclamationmark.circle")
@@ -659,6 +692,17 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 14) {
             sliderRow("定时", value: $eng.timerHours, range: 1...12, format: "%.1f 小时",
                       hint: "到时后 10 分钟内淡出并停止")
+
+            Toggle("清晨预铺垫", isOn: $eng.dawnEnabled)
+                .font(.subheadline)
+            Text("早班交通到来前主动抬高底噪,而不是等噪音出现再追。")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            if eng.dawnEnabled {
+                sliderRow("开始时间", value: $eng.dawnStartHour, range: 3...7, format: "%.1f 点", hint: nil)
+                sliderRow("抬升量", value: $eng.dawnBoost, range: 0...0.3, format: "%.2f", hint: nil)
+            }
 
             Toggle("记录整夜频谱 (CSV)", isOn: $eng.logEnabled)
                 .font(.subheadline)
