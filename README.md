@@ -44,10 +44,18 @@ Four design decisions worth explaining:
 | Parameter | Default | Meaning |
 |---|---|---|
 | Masking offset | 4 dB | How far the masking sound sits above the ambient level |
-| Volume ceiling | 0.60 | Hard per-band limit |
+| Volume ceiling | 0.40 | Hard per-band limit |
 | Noise floor | 0.04 | Thin baseline kept during quiet periods |
-| Quiet gate | −58 dB | Below this the room counts as quiet |
+| Sensitivity | +14 dB | How far above that band's own floor a sound must rise before the app reacts |
+| Dawn pre-masking | 04:30–09:00 | Raises the floor ahead of early traffic instead of chasing it |
 | Timer | 8 h | Fades out over 10 minutes when it expires |
+
+### Field data shaped the design
+
+The first overnight recording (Zurich, ~6 h) overturned two decisions that had been made by guesswork:
+
+- **The gate is now relative, not absolute.** The original build used a fixed −58 dB threshold. Measured ambient levels sat between −86 and −101 dB, so the gate never fired and the app idled at its baseline for 92% of the night. Each band's gate is now derived from its own floor, measured during calibration — which adapts to any room and any device.
+- **The noise is a dawn problem, not an all-night one.** Between 01:00 and 05:00 the 63 Hz band crossed threshold only 3–5% of the time; by 06:00 it was 54%, peaking near −62 dB as the first trams and traffic started. That window is also when sleep is lightest, so the app now ramps its floor up before it arrives rather than reacting 1.5 s late.
 
 ### Known limitations
 
@@ -109,10 +117,18 @@ Overnight bedside sound exposure should stay below roughly 45–50 dB(A). The go
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | 掩蔽余量 | 4 dB | 掩蔽声比环境声高多少 |
-| 音量上限 | 0.60 | 每频段硬上限 |
+| 音量上限 | 0.40 | 每频段硬上限 |
 | 基础底噪 | 0.04 | 安静时保留的薄底噪 |
-| 安静门限 | −58 dB | 低于此值视为安静 |
+| 灵敏度 | 高于底噪 14 dB | 噪音超出本频段底噪多少才介入 |
+| 清晨预铺垫 | 4:30–9:00 | 早班交通到来前主动抬高底噪 |
 | 定时 | 8 小时 | 到时后 10 分钟淡出 |
+
+### 实测数据改变了两个设计
+
+第一夜的整夜录音(苏黎世,约 6 小时)推翻了两个凭猜设定的决策:
+
+- **门限从绝对值改成相对值**。初版用固定的 −58 dB;实测环境噪音在 −86 到 −101 dB,门限从未被触发,整夜有 92% 的时间 App 停在底噪上什么也没做。现在每个频段的门限由校准时测得的本底自动推算,可适配任何房间和设备。
+- **噪音是清晨问题,不是整夜问题**。凌晨 1 点到 5 点,63Hz 频段只有 3–5% 的时间超过门限;到早上 6 点变成 54%,峰值约 −62 dB,正是首班电车和早班交通开始的时刻。而那也是睡眠最浅的阶段,所以 App 改为提前抬高底噪,而不是慢 1.5 秒去追。
 
 ### 已知局限
 
